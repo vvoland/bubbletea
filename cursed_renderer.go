@@ -770,56 +770,121 @@ func (s *cursedRenderer) setWidthMethod(method ansi.Method) {
 
 // insertAbove implements renderer.
 func (s *cursedRenderer) insertAbove(str string) error {
+	// A pending view may have changed the frame's contents or height.
+	// Preserve the frame that is actually on screen, not stale geometry.
+	if err := s.flush(false); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if len(str) == 0 {
+	if s.view.AltScreen {
 		return nil
 	}
 
-	var sb strings.Builder
-	w, h := s.cellbuf.Width(), s.cellbuf.Height()
-	_, y := s.scr.Position()
+	lines := strings.Split(s.cellbuf.Method.Hardwrap(str, s.cellbuf.Width(), true), "\n")
+	frameHeight := s.cellbuf.Height()
 
-	// We need to scroll the screen up by the number of lines in the queue.
-	sb.WriteByte('\r')
-	down := h - y - 1
-	if down > 0 {
-		sb.WriteString(ansi.CursorDown(down))
+	if len(s.view.Content) == 0 || frameHeight == 0 {
+		var sb strings.Builder
+		writeInsertionLines(&sb, lines)
+		writeViewColors(&sb, s.view)
+		s.scr.SetPosition(0, 0)
+
+		return s.writeInsertion(sb.String())
 	}
 
-	lines := strings.Split(str, "\n")
-	offset := len(lines)
-	for _, line := range lines {
-		lineWidth := ansi.StringWidth(line)
-		if w > 0 && lineWidth > w {
-			offset += (lineWidth / w)
+	var sb strings.Builder
+	// CursorUp(0) still moves one row.
+	cursorUp := func(n int) {
+		if n > 0 {
+			sb.WriteString(ansi.CursorUp(n))
 		}
 	}
 
-	// Scroll the screen up by the offset to make room for the new lines.
-	sb.WriteString(strings.Repeat("\n", offset))
+	// Go to the frame's top and clear its rows one by one before writing.
+	// Erasing after a full-width row would remove its last cell, and tmux
+	// saves full-screen clears to scrollback.
+	x, y := s.scr.Position()
 
-	// XXX: Now go to the top of the screen, insert new lines, and write
-	// the queued strings. It is important to use [Screen.moveCursor]
-	// instead of [Screen.move] because we don't want to perform any checks
-	// on the cursor position.
-	up := offset + h - 1
-	sb.WriteString(ansi.CursorUp(up))
-	sb.WriteString(ansi.InsertLine(offset))
+	sb.WriteByte('\r')
+	cursorUp(y)
+	sb.WriteString(strings.Repeat(ansi.EraseEntireLine+ansi.CursorDown1, frameHeight-1))
+	sb.WriteString(ansi.EraseEntireLine)
+	cursorUp(frameHeight - 1)
+
+	// Write over the cleared frame so only printed output enters scrollback.
+	writeInsertionLines(&sb, lines)
+
+	// The final CRLF leaves us at the new frame's first row.
+	// Visit its last row so any scrolling happens before we repaint the frame.
+	sb.WriteString(strings.Repeat("\n", frameHeight-1))
+	cursorUp(frameHeight - 1)
+
+	// Printed text may change the terminal's default colors.
+	writeViewColors(&sb, s.view)
+
+	// Paint the blank rows with the terminal renderer's Unicode wrap protection.
+	// A fresh renderer avoids the screen erase that Redraw would emit.
+	redraw := uv.NewTerminalRenderer(&sb, s.env)
+	redraw.SetColorProfile(s.profile)
+	redraw.SetRelativeCursor(true)
+	redraw.SetGraphemeWidth(s.cellbuf.Method == ansi.GraphemeWidth)
+	redraw.SetPosition(0, 0)
+
+	// The earlier flush cleared the touch list, but this renderer has no frame
+	// cached and needs every row marked for painting.
+	for row := range s.cellbuf.Lines {
+		s.cellbuf.TouchLine(0, row, s.cellbuf.Width())
+	}
+
+	redraw.Render(s.cellbuf.RenderBuffer)
+	redraw.MoveTo(x, y)
+	_ = redraw.Flush() // strings.Builder writes cannot fail.
+
+	// The frame moved, but its cells and frame-relative cursor position are
+	// unchanged, so the main renderer's cached frame remains valid.
+	s.scr.SetPosition(x, y)
+
+	return s.writeInsertion(sb.String())
+}
+
+// writeInsertionLines writes lines from the cursor down onto blank rows.
+func writeInsertionLines(sb *strings.Builder, lines []string) {
 	for _, line := range lines {
 		sb.WriteString(line)
-		sb.WriteString(ansi.EraseLineRight)
 		sb.WriteString("\r\n")
 	}
 
-	s.scr.SetPosition(0, 0)
+	sb.WriteString(ansi.ResetStyle)
+	sb.WriteString(ansi.ResetHyperlink())
+}
 
-	if s.logger != nil {
-		s.logger.Printf("insert above: %q", sb.String())
+func writeViewColors(sb *strings.Builder, view View) {
+	if view.ForegroundColor != nil {
+		if col, ok := colorful.MakeColor(view.ForegroundColor); ok {
+			sb.WriteString(ansi.SetForegroundColor(col.Hex()))
+		}
 	}
 
-	_, err := io.WriteString(s.w, sb.String())
+	if view.BackgroundColor != nil {
+		if col, ok := colorful.MakeColor(view.BackgroundColor); ok {
+			sb.WriteString(ansi.SetBackgroundColor(col.Hex()))
+		}
+	}
+}
+
+func (s *cursedRenderer) writeInsertion(str string) error {
+	if s.logger != nil {
+		s.logger.Printf("insert above: %q", str)
+	}
+
+	if s.syncdUpdates {
+		str = ansi.SetModeSynchronizedOutput + str + ansi.ResetModeSynchronizedOutput
+	}
+
+	_, err := io.WriteString(s.w, str)
 	if err != nil {
 		return fmt.Errorf("bubbletea: error writing insert above to the writer: %w", err)
 	}
