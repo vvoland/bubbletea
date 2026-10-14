@@ -66,6 +66,20 @@ func TestCursedRendererInsertAboveEmptyFrame(t *testing.T) {
 	}
 }
 
+func TestCursedRendererInsertAboveSoftWrap(t *testing.T) {
+	output, renderer := newInsertionTestRenderer(t, 4, 3, "")
+	renderer.setSoftWrapPrint(true)
+
+	if err := renderer.insertAbove("abcdefgh"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "abcdefgh\r\n" + ansi.ResetStyle + ansi.ResetHyperlink()
+	if got := output.lastWrite(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
 func TestCursedRendererInsertAboveSynchronizesOutput(t *testing.T) {
 	t.Parallel()
 

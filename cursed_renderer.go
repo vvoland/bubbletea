@@ -35,6 +35,7 @@ type cursedRenderer struct {
 	starting      bool // indicates whether the renderer is starting after being stopped
 	pendingErase  bool // an scr.Erase() is pending and hasn't been drained by flush yet
 	noInput       bool // whether input is disabled, in which case keyboard enhancement queries are pointless
+	softWrapPrint bool // whether to leave lines inserted above the frame for the terminal to wrap
 }
 
 var _ renderer = &cursedRenderer{}
@@ -62,6 +63,13 @@ func (s *cursedRenderer) setLogger(logger uv.Logger) {
 // would arrive after the program has exited and leak into the shell.
 func (s *cursedRenderer) setNoInput(noInput bool) {
 	s.noInput = noInput
+}
+
+// setSoftWrapPrint sets whether lines inserted above the frame are left for
+// the terminal to soft-wrap and reflow instead of being hard-wrapped to the
+// frame width.
+func (s *cursedRenderer) setSoftWrapPrint(softWrap bool) {
+	s.softWrapPrint = softWrap
 }
 
 // resetKeyboardEnhancements writes the sequences that reset keyboard
@@ -783,7 +791,12 @@ func (s *cursedRenderer) insertAbove(str string) error {
 		return nil
 	}
 
-	lines := strings.Split(s.cellbuf.Method.Hardwrap(str, s.cellbuf.Width(), true), "\n")
+	width := s.cellbuf.Width()
+	if s.softWrapPrint {
+		width = 0
+	}
+
+	lines := strings.Split(s.cellbuf.Method.Hardwrap(str, width, true), "\n")
 	frameHeight := s.cellbuf.Height()
 
 	if len(s.view.Content) == 0 || frameHeight == 0 {

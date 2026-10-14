@@ -569,6 +569,8 @@ type Program struct {
 	useHardTabs bool
 	// whether to use backspace to optimize cursor movements
 	useBackspace bool
+	// whether to let the terminal soft-wrap lines printed above the program
+	softWrapPrint bool
 
 	mu sync.Mutex
 }
@@ -1093,6 +1095,7 @@ func (p *Program) Run() (returnModel Model, returnErr error) {
 			)
 			r.setLogger(p.logger)
 			r.setNoInput(p.disableInput)
+			r.setSoftWrapPrint(p.softWrapPrint)
 			// XXX: This breaks many things especially when we want the output
 			// to be compatible with terminals that are not necessary a TTY.
 			// This was originally done to work around a Wish emulated-pty

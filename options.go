@@ -173,3 +173,14 @@ func WithWindowSize(width, height int) ProgramOption {
 		p.height = height
 	}
 }
+
+// WithSoftWrappedPrint leaves lines printed above the Program with [Println]
+// and [Printf] for the terminal to soft-wrap instead of hard-wrapping them to
+// the window width.
+// The terminal can then reflow them on resize, and text copied from the
+// scrollback contains no inserted line breaks.
+func WithSoftWrappedPrint() ProgramOption {
+	return func(p *Program) {
+		p.softWrapPrint = true
+	}
+}
